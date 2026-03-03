@@ -125,7 +125,7 @@ app.registerExtension({
 
                 // Add List Prompts button
                 console.log("[PromptManager] Adding List Prompts button");
-                const listButton = this.addWidget("button", "List Prompts", null, () => {
+                const listButton = this.addWidget("button", "List All Prompts", null, () => {
                     console.log("[PromptManager] ===== LIST PROMPTS BUTTON CLICKED =====");
                     this.fetchPrompts().catch(err => {
                         console.error("[PromptManager] Error in fetchPrompts:", err);

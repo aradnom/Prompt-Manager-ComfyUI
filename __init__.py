@@ -15,7 +15,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PM_TextInput": "Text Input (PM)",
-    "PM_PromptSelector": "Prompt Selector (PM)",
+    "PM_PromptSelector": "Prompt Selector (Prompt Manager)",
 }
 
 WEB_DIRECTORY = "./js"
