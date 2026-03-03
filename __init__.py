@@ -5,16 +5,14 @@
 @description: Custom nodes for managing prompts in ComfyUI
 """
 
-from .nodes import TextInputNode, PromptSelectorNode
+from .nodes import PromptSelectorNode
 from . import server  # Register server routes
 
 NODE_CLASS_MAPPINGS = {
-    "PM_TextInput": TextInputNode,
     "PM_PromptSelector": PromptSelectorNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "PM_TextInput": "Text Input (PM)",
     "PM_PromptSelector": "Prompt Selector (Prompt Manager)",
 }
 

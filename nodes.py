@@ -1,32 +1,6 @@
 from .api_client import PromptManagerAPI
 
 
-class TextInputNode:
-    """A simple text input node that outputs the entered string"""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "text": ("STRING", {
-                    "default": "",
-                    "multiline": True,
-                    "placeholder": "Enter your text here..."
-                }),
-            },
-        }
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("text",)
-    FUNCTION = "execute"
-    CATEGORY = "PromptManager"
-    DESCRIPTION = "A simple text input node that outputs the entered string"
-
-    def execute(self, text):
-        """Returns the input text as output"""
-        return (text,)
-
-
 class PromptSelectorNode:
     """Fetches and displays available prompts from Prompt Manager"""
 
