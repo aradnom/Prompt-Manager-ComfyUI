@@ -63,6 +63,10 @@ app.registerExtension({
 
                 log("[PromptManager] Node created, widgets:", this.widgets?.map(w => ({name: w.name, type: w.type})));
 
+                // Lookup maps for label <-> display_id resolution
+                this._labelToId = new Map();
+                this._idToLabel = new Map();
+
                 // Connection status: null = checking, true = connected, false = disconnected
                 this._connectionStatus = null;
                 this.checkHeartbeat().catch(() => {});
@@ -98,7 +102,8 @@ app.registerExtension({
                 const refreshButton = this.addWidget("button", "Refresh Prompt", null, () => {
                     log("[PromptManager] ===== REFRESH PROMPT BUTTON CLICKED =====");
                     const isActive = this.activeToggleWidget?.value;
-                    const targetId = isActive ? this._activeDisplayId : this.promptWidget?.value;
+                    const comboValue = this.promptWidget?.value;
+                    const targetId = isActive ? this._activeDisplayId : (this._labelToId.get(comboValue) || comboValue);
                     log("[PromptManager] Refresh target (active=" + isActive + "):", targetId);
 
                     if (targetId) {
@@ -144,9 +149,10 @@ app.registerExtension({
                     "",
                     (value) => {
                         log("[PromptManager] ===== PROMPT SELECTED =====");
-                        log("[PromptManager] Selected prompt:", value);
-                        if (value) {
-                            this.fetchPromptContent(value).catch(err => {
+                        const displayId = this._labelToId.get(value) || value;
+                        log("[PromptManager] Selected prompt:", value, "-> display_id:", displayId);
+                        if (displayId) {
+                            this.fetchPromptContent(displayId).catch(err => {
                                 console.error("[PromptManager] Error fetching prompt content:", err);
                             });
                         }
@@ -279,9 +285,11 @@ app.registerExtension({
                         this.setDirtyCanvas(true, true);
                     }
 
-                    if (this.promptWidget && display_id &&
-                        this.promptWidget.options.values.includes(display_id)) {
-                        this.promptWidget.value = display_id;
+                    if (this.promptWidget && display_id) {
+                        const label = this._idToLabel.get(display_id) || display_id;
+                        if (this.promptWidget.options.values.includes(label)) {
+                            this.promptWidget.value = label;
+                        }
                     }
 
                     log("[PromptManager] ===== fetchActivePrompt END =====");
@@ -363,19 +371,54 @@ app.registerExtension({
                     if (data.prompts && Array.isArray(data.prompts)) {
                         log("[PromptManager] Processing", data.prompts.length, "prompts");
 
-                        // Update the combo widget with the prompt list
+                        // Build label <-> display_id maps
+                        this._labelToId = new Map();
+                        this._idToLabel = new Map();
+
+                        // Count name occurrences to detect duplicates
+                        const nameCounts = new Map();
+                        for (const p of data.prompts) {
+                            const name = (typeof p === "object" && p.name) ? p.name : null;
+                            if (name) {
+                                nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+                            }
+                        }
+
+                        // Generate labels
+                        const labels = data.prompts.map(p => {
+                            // Support both old format (plain strings) and new format (objects)
+                            if (typeof p === "string") {
+                                this._labelToId.set(p, p);
+                                this._idToLabel.set(p, p);
+                                return p;
+                            }
+
+                            const { display_id, name } = p;
+                            let label;
+                            if (!name) {
+                                label = display_id;
+                            } else if (nameCounts.get(name) > 1) {
+                                label = `${name} (${display_id})`;
+                            } else {
+                                label = name;
+                            }
+
+                            this._labelToId.set(label, display_id);
+                            this._idToLabel.set(display_id, label);
+                            return label;
+                        });
+
+                        // Update the combo widget with labels
                         if (this.promptWidget) {
                             log("[PromptManager] Updating combo widget");
-                            this.promptWidget.options.values = data.prompts;
-                            this.promptWidget.value = data.prompts[0] || "";
+                            this.promptWidget.options.values = labels;
+                            this.promptWidget.value = labels[0] || "";
 
                             log("[PromptManager] Widget updated:", {
                                 values: this.promptWidget.options.values,
                                 value: this.promptWidget.value
                             });
 
-                            // Force UI update
-                            log("[PromptManager] Forcing canvas update");
                             this.setDirtyCanvas(true, true);
                         } else {
                             console.error("[PromptManager] promptWidget not found!");
@@ -464,8 +507,8 @@ app.registerExtension({
                             }
                         } else {
                             // Manual mode: update if this stack is selected
-                            const selectedPrompt = node.promptWidget?.value;
-                            if (selectedPrompt === display_id) {
+                            const selectedId = node._labelToId?.get(node.promptWidget?.value) || node.promptWidget?.value;
+                            if (selectedId === display_id) {
                                 log("[PromptManager] Updating manual-mode node with new content");
                                 if (node.contentWidget) {
                                     node.contentWidget.value = prompt || "";
@@ -501,9 +544,11 @@ app.registerExtension({
                         }
 
                         // Sync the combo display if the display_id is in its list
-                        if (node.promptWidget && display_id &&
-                            node.promptWidget.options.values.includes(display_id)) {
-                            node.promptWidget.value = display_id;
+                        if (node.promptWidget && display_id) {
+                            const label = node._idToLabel?.get(display_id) || display_id;
+                            if (node.promptWidget.options.values.includes(label)) {
+                                node.promptWidget.value = label;
+                            }
                         }
                     });
                 } catch (error) {
