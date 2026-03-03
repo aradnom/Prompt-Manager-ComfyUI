@@ -85,15 +85,6 @@ app.registerExtension({
                     };
                 }
 
-                // Add button widget
-                console.log("[PromptManager] Adding List Prompts button");
-                const listButton = this.addWidget("button", "List Prompts", null, () => {
-                    console.log("[PromptManager] ===== LIST PROMPTS BUTTON CLICKED =====");
-                    this.fetchPrompts().catch(err => {
-                        console.error("[PromptManager] Error in fetchPrompts:", err);
-                    });
-                });
-
                 // Add Refresh Prompt button
                 console.log("[PromptManager] Adding Refresh Prompt button");
                 const refreshButton = this.addWidget("button", "Refresh Prompt", null, () => {
@@ -109,6 +100,32 @@ app.registerExtension({
                     } else {
                         console.warn("[PromptManager] No prompt selected/active to refresh");
                     }
+                });
+
+                // Add divider between refresh/active controls and manual selection controls
+                this.addCustomWidget({
+                    name: "divider",
+                    type: "divider",
+                    value: null,
+                    options: {},
+                    computeSize: () => [0, 20],
+                    serializeValue: () => undefined,
+                    draw(ctx, node, width, y) {
+                        ctx.strokeStyle = "#666";
+                        ctx.beginPath();
+                        ctx.moveTo(15, y + 10);
+                        ctx.lineTo(width - 15, y + 10);
+                        ctx.stroke();
+                    },
+                });
+
+                // Add List Prompts button
+                console.log("[PromptManager] Adding List Prompts button");
+                const listButton = this.addWidget("button", "List Prompts", null, () => {
+                    console.log("[PromptManager] ===== LIST PROMPTS BUTTON CLICKED =====");
+                    this.fetchPrompts().catch(err => {
+                        console.error("[PromptManager] Error in fetchPrompts:", err);
+                    });
                 });
 
                 // Add combo widget for prompt selection
