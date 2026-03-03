@@ -255,8 +255,8 @@ app.registerExtension({
                 console.log("[PromptManager] SSE connection established");
             };
 
-            eventSource.onmessage = (event) => {
-                console.log("[PromptManager] ===== RECEIVED SSE MESSAGE =====");
+            eventSource.addEventListener("stackUpdate", (event) => {
+                console.log("[PromptManager] ===== RECEIVED stackUpdate EVENT =====");
                 console.log("[PromptManager] Raw event data:", event.data);
 
                 try {
@@ -295,7 +295,7 @@ app.registerExtension({
                 } catch (error) {
                     console.error("[PromptManager] Error parsing SSE message:", error);
                 }
-            };
+            });
 
             eventSource.onerror = (error) => {
                 console.error("[PromptManager] SSE connection error:", error);
