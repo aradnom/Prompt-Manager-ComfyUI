@@ -59,6 +59,10 @@ app.registerExtension({
 
                 console.log("[PromptManager] Node created, widgets:", this.widgets?.map(w => ({name: w.name, type: w.type})));
 
+                // Connection status: null = checking, true = connected, false = disconnected
+                this._connectionStatus = null;
+                this.checkHeartbeat().catch(() => {});
+
                 // Find the existing prompt_content widget that Python created
                 const contentWidget = this.widgets.find(w => w.name === "prompt_content");
                 console.log("[PromptManager] Found prompt_content widget:", contentWidget);
@@ -185,6 +189,59 @@ app.registerExtension({
                 }
 
                 return result;
+            };
+
+            // Add heartbeat check method
+            nodeType.prototype.checkHeartbeat = async function() {
+                try {
+                    const cfg = await getConfig();
+                    const apiUrl = cfg.api_url;
+                    const headers = getAuthHeaders();
+                    delete headers["Content-Type"];
+
+                    const response = await fetch(`${apiUrl}/api/integrations/comfyui/heartbeat`, { headers });
+                    this._connectionStatus = response.ok;
+                } catch (error) {
+                    this._connectionStatus = false;
+                }
+                this.setDirtyCanvas(true, true);
+            };
+
+            // Draw status dot in the title bar
+            const onDrawForeground = nodeType.prototype.onDrawForeground;
+            nodeType.prototype.onDrawForeground = function(ctx) {
+                onDrawForeground?.apply(this, arguments);
+
+                ctx.save();
+                const dotRadius = 3;
+                const y = -LiteGraph.NODE_TITLE_HEIGHT / 2;
+
+                // Label
+                const label = this._connectionStatus === true ? "Connected"
+                    : this._connectionStatus === false ? "Disconnected"
+                    : "Checking...";
+
+                ctx.font = "10px sans-serif";
+                ctx.textAlign = "right";
+                ctx.textBaseline = "middle";
+                const textX = this.size[0] - dotRadius * 2 - 12;
+
+                ctx.fillStyle = "#ccc";
+                ctx.fillText(label, textX, y);
+
+                // Dot color
+                if (this._connectionStatus === true) {
+                    ctx.fillStyle = "#4CAF50";
+                } else if (this._connectionStatus === false) {
+                    ctx.fillStyle = "#F44336";
+                } else {
+                    ctx.fillStyle = "#999";
+                }
+
+                ctx.beginPath();
+                ctx.arc(this.size[0] - dotRadius - 8, y, dotRadius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
             };
 
             // Add method to fetch the current active prompt
