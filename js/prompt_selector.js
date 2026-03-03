@@ -414,6 +414,15 @@ app.registerExtension({
                             this.promptWidget.options.values = labels;
                             this.promptWidget.value = labels[0] || "";
 
+                            // Fetch content for the selected item (skip if active mode
+                            // is on — active prompt content is handled separately)
+                            if (labels[0] && !this.activeToggleWidget?.value) {
+                                const firstId = this._labelToId.get(labels[0]) || labels[0];
+                                this.fetchPromptContent(firstId).catch(err => {
+                                    console.error("[PromptManager] Error fetching initial prompt content:", err);
+                                });
+                            }
+
                             log("[PromptManager] Widget updated:", {
                                 values: this.promptWidget.options.values,
                                 value: this.promptWidget.value

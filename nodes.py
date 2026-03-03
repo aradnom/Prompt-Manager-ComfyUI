@@ -33,3 +33,28 @@ class PromptSelectorNode:
 
         # Simply return whatever is in the prompt_content field
         return (prompt_content,)
+
+
+class SnapshotSelectorNode:
+    """Fetches and displays available snapshots from Prompt Manager"""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "snapshot_content": ("STRING", {
+                    "multiline": True,
+                    "default": ""
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("text",)
+    FUNCTION = "execute"
+    CATEGORY = "PromptManager"
+    DESCRIPTION = "Select and fetch snapshots from Prompt Manager"
+
+    def execute(self, snapshot_content):
+        """Output the snapshot content"""
+        return (snapshot_content,)

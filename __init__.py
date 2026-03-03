@@ -5,15 +5,17 @@
 @description: Custom nodes for managing prompts in ComfyUI
 """
 
-from .nodes import PromptSelectorNode
+from .nodes import PromptSelectorNode, SnapshotSelectorNode
 from . import server  # Register server routes
 
 NODE_CLASS_MAPPINGS = {
     "PM_PromptSelector": PromptSelectorNode,
+    "PM_SnapshotSelector": SnapshotSelectorNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PM_PromptSelector": "Prompt Selector (Prompt Manager)",
+    "PM_SnapshotSelector": "Snapshot Selector (Prompt Manager)",
 }
 
 WEB_DIRECTORY = "./js"
