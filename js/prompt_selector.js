@@ -77,6 +77,11 @@ app.registerExtension({
                     activeToggle.callback = (value) => {
                         console.log("[PromptManager] use_active_prompt toggled:", value);
                         nodeRef._updateActiveMode(value);
+                        if (value) {
+                            nodeRef.fetchActivePrompt().catch(err => {
+                                console.error("[PromptManager] Error fetching active prompt:", err);
+                            });
+                        }
                     };
                 }
 
@@ -138,7 +143,7 @@ app.registerExtension({
                     this.setDirtyCanvas(true, true);
                 };
 
-                // Apply initial state (handles workflow reload with toggle saved as true)
+                // Apply initial state for freshly created nodes
                 if (this.activeToggleWidget) {
                     this._updateActiveMode(this.activeToggleWidget.value);
                 }
@@ -146,6 +151,65 @@ app.registerExtension({
                 console.log("[PromptManager] Final widgets:", this.widgets.map(w => ({name: w.name, type: w.type})));
 
                 return result;
+            };
+
+            // onConfigure fires after saved widget values are restored
+            const onConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function() {
+                const result = onConfigure?.apply(this, arguments);
+
+                if (this.activeToggleWidget) {
+                    this._updateActiveMode(this.activeToggleWidget.value);
+                    if (this.activeToggleWidget.value) {
+                        this.fetchActivePrompt().catch(err => {
+                            console.error("[PromptManager] Error fetching active prompt on startup:", err);
+                        });
+                    }
+                }
+
+                return result;
+            };
+
+            // Add method to fetch the current active prompt
+            nodeType.prototype.fetchActivePrompt = async function() {
+                console.log("[PromptManager] ===== fetchActivePrompt START =====");
+
+                try {
+                    const cfg = await getConfig();
+                    const apiUrl = cfg.api_url;
+
+                    const url = `${apiUrl}/api/integrations/comfyui/prompts/active`;
+                    console.log("[PromptManager] Fetching from:", url);
+
+                    const headers = getAuthHeaders();
+                    delete headers["Content-Type"];
+
+                    const response = await fetch(url, { headers });
+                    console.log("[PromptManager] Response status:", response.status);
+
+                    const data = await response.json();
+                    console.log("[PromptManager] Parsed data:", data);
+
+                    const { display_id, prompt } = data;
+
+                    this._activeDisplayId = display_id || null;
+
+                    if (this.contentWidget) {
+                        this.contentWidget.value = (prompt != null) ? prompt : "";
+                        this.setDirtyCanvas(true, true);
+                    }
+
+                    if (this.promptWidget && display_id &&
+                        this.promptWidget.options.values.includes(display_id)) {
+                        this.promptWidget.value = display_id;
+                    }
+
+                    console.log("[PromptManager] ===== fetchActivePrompt END =====");
+                } catch (error) {
+                    console.error("[PromptManager] ===== fetchActivePrompt ERROR =====");
+                    console.error("[PromptManager] Error:", error);
+                    console.error("[PromptManager] Stack:", error.stack);
+                }
             };
 
             // Add method to fetch prompt content
