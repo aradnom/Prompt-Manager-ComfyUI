@@ -37,6 +37,9 @@ class PromptSelectorNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
+                "use_active_prompt": ("BOOLEAN", {
+                    "default": False,
+                }),
                 "prompt_content": ("STRING", {
                     "multiline": True,
                     "default": ""
@@ -50,7 +53,7 @@ class PromptSelectorNode:
     CATEGORY = "PromptManager"
     DESCRIPTION = "Select and fetch prompts from Prompt Manager"
 
-    def execute(self, prompt_content):
+    def execute(self, use_active_prompt, prompt_content):
         """Output the prompt content"""
         print(f"[PromptManager] Execute called with prompt_content: '{prompt_content[:100] if prompt_content else '(empty)'}...'")
 

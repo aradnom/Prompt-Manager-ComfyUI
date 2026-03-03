@@ -67,6 +67,19 @@ app.registerExtension({
                     this.contentWidget = contentWidget;
                 }
 
+                // Find the use_active_prompt toggle widget that Python created
+                const activeToggle = this.widgets.find(w => w.name === "use_active_prompt");
+                if (activeToggle) {
+                    this.activeToggleWidget = activeToggle;
+                    this._activeDisplayId = null;
+
+                    const nodeRef = this;
+                    activeToggle.callback = (value) => {
+                        console.log("[PromptManager] use_active_prompt toggled:", value);
+                        nodeRef._updateActiveMode(value);
+                    };
+                }
+
                 // Add button widget
                 console.log("[PromptManager] Adding List Prompts button");
                 const listButton = this.addWidget("button", "List Prompts", null, () => {
@@ -80,15 +93,16 @@ app.registerExtension({
                 console.log("[PromptManager] Adding Refresh Prompt button");
                 const refreshButton = this.addWidget("button", "Refresh Prompt", null, () => {
                     console.log("[PromptManager] ===== REFRESH PROMPT BUTTON CLICKED =====");
-                    const selectedPrompt = this.promptWidget?.value;
-                    console.log("[PromptManager] Selected prompt:", selectedPrompt);
+                    const isActive = this.activeToggleWidget?.value;
+                    const targetId = isActive ? this._activeDisplayId : this.promptWidget?.value;
+                    console.log("[PromptManager] Refresh target (active=" + isActive + "):", targetId);
 
-                    if (selectedPrompt) {
-                        this.fetchPromptContent(selectedPrompt).catch(err => {
+                    if (targetId) {
+                        this.fetchPromptContent(targetId).catch(err => {
                             console.error("[PromptManager] Error refreshing prompt:", err);
                         });
                     } else {
-                        console.warn("[PromptManager] No prompt selected to refresh");
+                        console.warn("[PromptManager] No prompt selected/active to refresh");
                     }
                 });
 
@@ -111,6 +125,23 @@ app.registerExtension({
                 );
 
                 this.promptWidget = promptWidget;
+                this.listButton = listButton;
+
+                // Enable/disable manual-mode widgets based on active prompt toggle
+                this._updateActiveMode = function(isActive) {
+                    if (this.listButton) {
+                        this.listButton.disabled = isActive;
+                    }
+                    if (this.promptWidget) {
+                        this.promptWidget.disabled = isActive;
+                    }
+                    this.setDirtyCanvas(true, true);
+                };
+
+                // Apply initial state (handles workflow reload with toggle saved as true)
+                if (this.activeToggleWidget) {
+                    this._updateActiveMode(this.activeToggleWidget.value);
+                }
 
                 console.log("[PromptManager] Final widgets:", this.widgets.map(w => ({name: w.name, type: w.type})));
 
@@ -274,26 +305,65 @@ app.registerExtension({
                     const nodes = app.graph._nodes.filter(n => n.type === "PM_PromptSelector");
                     console.log("[PromptManager] Found", nodes.length, "PromptSelector nodes");
 
-                    // Update any nodes that have this prompt selected
+                    // Update matching nodes
                     nodes.forEach(node => {
-                        const selectedPrompt = node.promptWidget?.value;
-                        console.log("[PromptManager] Node has prompt:", selectedPrompt);
+                        const isActive = node.activeToggleWidget?.value;
 
-                        if (selectedPrompt === display_id) {
-                            console.log("[PromptManager] Updating node with new content");
-
-                            // Update the content widget
-                            if (node.contentWidget) {
-                                node.contentWidget.value = prompt || "";
-                                console.log("[PromptManager] Content updated");
-
-                                // Force UI update
-                                node.setDirtyCanvas(true, true);
+                        if (isActive) {
+                            // Active mode: update if this stack is the active one
+                            if (node._activeDisplayId && node._activeDisplayId === display_id) {
+                                console.log("[PromptManager] Updating active-mode node (stack content changed)");
+                                if (node.contentWidget) {
+                                    node.contentWidget.value = prompt || "";
+                                    node.setDirtyCanvas(true, true);
+                                }
+                            }
+                        } else {
+                            // Manual mode: update if this stack is selected
+                            const selectedPrompt = node.promptWidget?.value;
+                            if (selectedPrompt === display_id) {
+                                console.log("[PromptManager] Updating manual-mode node with new content");
+                                if (node.contentWidget) {
+                                    node.contentWidget.value = prompt || "";
+                                    node.setDirtyCanvas(true, true);
+                                }
                             }
                         }
                     });
                 } catch (error) {
                     console.error("[PromptManager] Error parsing SSE message:", error);
+                }
+            });
+
+            eventSource.addEventListener("activeStackChanged", (event) => {
+                console.log("[PromptManager] ===== RECEIVED activeStackChanged EVENT =====");
+                console.log("[PromptManager] Raw event data:", event.data);
+
+                try {
+                    const data = JSON.parse(event.data);
+                    const { display_id, prompt } = data;
+
+                    const nodes = app.graph._nodes.filter(n => n.type === "PM_PromptSelector");
+
+                    nodes.forEach(node => {
+                        if (!node.activeToggleWidget?.value) return;
+
+                        // Track the active stack's display_id for stackUpdate cross-referencing
+                        node._activeDisplayId = display_id || null;
+
+                        if (node.contentWidget) {
+                            node.contentWidget.value = (prompt != null) ? prompt : "";
+                            node.setDirtyCanvas(true, true);
+                        }
+
+                        // Sync the combo display if the display_id is in its list
+                        if (node.promptWidget && display_id &&
+                            node.promptWidget.options.values.includes(display_id)) {
+                            node.promptWidget.value = display_id;
+                        }
+                    });
+                } catch (error) {
+                    console.error("[PromptManager] Error parsing activeStackChanged event:", error);
                 }
             });
 
