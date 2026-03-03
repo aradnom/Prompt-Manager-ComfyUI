@@ -185,12 +185,14 @@ app.registerExtension({
 
                 if (this.activeToggleWidget) {
                     this._updateActiveMode(this.activeToggleWidget.value);
-                    if (this.activeToggleWidget.value) {
-                        this.fetchActivePrompt().catch(err => {
-                            console.error("[PromptManager] Error fetching active prompt on startup:", err);
-                        });
-                    }
                 }
+
+                // Populate the prompt list, then fetch the active prompt's content
+                this.fetchPrompts()
+                    .then(() => this.fetchActivePrompt())
+                    .catch(err => {
+                        console.error("[PromptManager] Error during startup hydration:", err);
+                    });
 
                 return result;
             };
