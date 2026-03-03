@@ -1,7 +1,10 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[PromptManager] Extension script loaded");
+// Logging helpers - gated by ENABLE_LOGGING from .env via /prompt-manager/config
+let _loggingEnabled = false;
+function log(...args) { if (_loggingEnabled) console.log(...args); }
+function warn(...args) { if (_loggingEnabled) console.warn(...args); }
 
 // Cache for config
 let config = null;
@@ -9,10 +12,11 @@ let config = null;
 async function getConfig() {
     if (!config) {
         try {
-            console.log("[PromptManager] Fetching config from /prompt-manager/config");
+            log("[PromptManager] Fetching config from /prompt-manager/config");
             const response = await api.fetchApi("/prompt-manager/config");
             config = await response.json();
-            console.log("[PromptManager] Config loaded:", config);
+            _loggingEnabled = !!config.enable_logging;
+            log("[PromptManager] Config loaded:", config);
         } catch (error) {
             console.error("[PromptManager] Error loading config:", error);
             throw error;
@@ -45,19 +49,19 @@ app.registerExtension({
     name: "PromptManager.PromptSelector",
 
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        console.log("[PromptManager] beforeRegisterNodeDef called for:", nodeData.name);
+        log("[PromptManager] beforeRegisterNodeDef called for:", nodeData.name);
 
         if (nodeData.name === "PM_PromptSelector") {
-            console.log("[PromptManager] Registering PM_PromptSelector extension");
+            log("[PromptManager] Registering PM_PromptSelector extension");
 
             const onNodeCreated = nodeType.prototype.onNodeCreated;
 
             nodeType.prototype.onNodeCreated = function() {
-                console.log("[PromptManager] onNodeCreated called");
+                log("[PromptManager] onNodeCreated called");
 
                 const result = onNodeCreated?.apply(this, arguments);
 
-                console.log("[PromptManager] Node created, widgets:", this.widgets?.map(w => ({name: w.name, type: w.type})));
+                log("[PromptManager] Node created, widgets:", this.widgets?.map(w => ({name: w.name, type: w.type})));
 
                 // Connection status: null = checking, true = connected, false = disconnected
                 this._connectionStatus = null;
@@ -65,7 +69,7 @@ app.registerExtension({
 
                 // Find the existing prompt_content widget that Python created
                 const contentWidget = this.widgets.find(w => w.name === "prompt_content");
-                console.log("[PromptManager] Found prompt_content widget:", contentWidget);
+                log("[PromptManager] Found prompt_content widget:", contentWidget);
 
                 if (contentWidget) {
                     this.contentWidget = contentWidget;
@@ -79,7 +83,7 @@ app.registerExtension({
 
                     const nodeRef = this;
                     activeToggle.callback = (value) => {
-                        console.log("[PromptManager] use_active_prompt toggled:", value);
+                        log("[PromptManager] use_active_prompt toggled:", value);
                         nodeRef._updateActiveMode(value);
                         if (value) {
                             nodeRef.fetchActivePrompt().catch(err => {
@@ -90,19 +94,19 @@ app.registerExtension({
                 }
 
                 // Add Refresh Prompt button
-                console.log("[PromptManager] Adding Refresh Prompt button");
+                log("[PromptManager] Adding Refresh Prompt button");
                 const refreshButton = this.addWidget("button", "Refresh Prompt", null, () => {
-                    console.log("[PromptManager] ===== REFRESH PROMPT BUTTON CLICKED =====");
+                    log("[PromptManager] ===== REFRESH PROMPT BUTTON CLICKED =====");
                     const isActive = this.activeToggleWidget?.value;
                     const targetId = isActive ? this._activeDisplayId : this.promptWidget?.value;
-                    console.log("[PromptManager] Refresh target (active=" + isActive + "):", targetId);
+                    log("[PromptManager] Refresh target (active=" + isActive + "):", targetId);
 
                     if (targetId) {
                         this.fetchPromptContent(targetId).catch(err => {
                             console.error("[PromptManager] Error refreshing prompt:", err);
                         });
                     } else {
-                        console.warn("[PromptManager] No prompt selected/active to refresh");
+                        warn("[PromptManager] No prompt selected/active to refresh");
                     }
                 });
 
@@ -124,23 +128,23 @@ app.registerExtension({
                 });
 
                 // Add List Prompts button
-                console.log("[PromptManager] Adding List Prompts button");
+                log("[PromptManager] Adding List Prompts button");
                 const listButton = this.addWidget("button", "List All Prompts", null, () => {
-                    console.log("[PromptManager] ===== LIST PROMPTS BUTTON CLICKED =====");
+                    log("[PromptManager] ===== LIST PROMPTS BUTTON CLICKED =====");
                     this.fetchPrompts().catch(err => {
                         console.error("[PromptManager] Error in fetchPrompts:", err);
                     });
                 });
 
                 // Add combo widget for prompt selection
-                console.log("[PromptManager] Adding prompt combo widget");
+                log("[PromptManager] Adding prompt combo widget");
                 const promptWidget = this.addWidget(
                     "combo",
                     "prompt_selector",
                     "",
                     (value) => {
-                        console.log("[PromptManager] ===== PROMPT SELECTED =====");
-                        console.log("[PromptManager] Selected prompt:", value);
+                        log("[PromptManager] ===== PROMPT SELECTED =====");
+                        log("[PromptManager] Selected prompt:", value);
                         if (value) {
                             this.fetchPromptContent(value).catch(err => {
                                 console.error("[PromptManager] Error fetching prompt content:", err);
@@ -169,7 +173,7 @@ app.registerExtension({
                     this._updateActiveMode(this.activeToggleWidget.value);
                 }
 
-                console.log("[PromptManager] Final widgets:", this.widgets.map(w => ({name: w.name, type: w.type})));
+                log("[PromptManager] Final widgets:", this.widgets.map(w => ({name: w.name, type: w.type})));
 
                 return result;
             };
@@ -246,23 +250,23 @@ app.registerExtension({
 
             // Add method to fetch the current active prompt
             nodeType.prototype.fetchActivePrompt = async function() {
-                console.log("[PromptManager] ===== fetchActivePrompt START =====");
+                log("[PromptManager] ===== fetchActivePrompt START =====");
 
                 try {
                     const cfg = await getConfig();
                     const apiUrl = cfg.api_url;
 
                     const url = `${apiUrl}/api/integrations/comfyui/prompts/active`;
-                    console.log("[PromptManager] Fetching from:", url);
+                    log("[PromptManager] Fetching from:", url);
 
                     const headers = getAuthHeaders();
                     delete headers["Content-Type"];
 
                     const response = await fetch(url, { headers });
-                    console.log("[PromptManager] Response status:", response.status);
+                    log("[PromptManager] Response status:", response.status);
 
                     const data = await response.json();
-                    console.log("[PromptManager] Parsed data:", data);
+                    log("[PromptManager] Parsed data:", data);
 
                     const { display_id, prompt } = data;
 
@@ -278,7 +282,7 @@ app.registerExtension({
                         this.promptWidget.value = display_id;
                     }
 
-                    console.log("[PromptManager] ===== fetchActivePrompt END =====");
+                    log("[PromptManager] ===== fetchActivePrompt END =====");
                 } catch (error) {
                     console.error("[PromptManager] ===== fetchActivePrompt ERROR =====");
                     console.error("[PromptManager] Error:", error);
@@ -288,32 +292,32 @@ app.registerExtension({
 
             // Add method to fetch prompt content
             nodeType.prototype.fetchPromptContent = async function(displayId) {
-                console.log("[PromptManager] ===== fetchPromptContent START =====");
-                console.log("[PromptManager] Fetching content for:", displayId);
+                log("[PromptManager] ===== fetchPromptContent START =====");
+                log("[PromptManager] Fetching content for:", displayId);
 
                 try {
                     const cfg = await getConfig();
                     const apiUrl = cfg.api_url;
 
                     const url = `${apiUrl}/api/integrations/comfyui/prompts/get?user_id=1&display_id=${encodeURIComponent(displayId)}`;
-                    console.log("[PromptManager] Fetching from:", url);
+                    log("[PromptManager] Fetching from:", url);
 
                     const headers = getAuthHeaders();
                     delete headers["Content-Type"]; // Not needed for GET request
 
                     const response = await fetch(url, { headers });
-                    console.log("[PromptManager] Response status:", response.status);
+                    log("[PromptManager] Response status:", response.status);
 
                     const data = await response.json();
-                    console.log("[PromptManager] Response data:", data);
+                    log("[PromptManager] Response data:", data);
 
                     if (data.prompt) {
-                        console.log("[PromptManager] Got prompt content:", data.prompt.substring(0, 100) + "...");
+                        log("[PromptManager] Got prompt content:", data.prompt.substring(0, 100) + "...");
 
                         // Update the content widget
                         if (this.contentWidget) {
                             this.contentWidget.value = data.prompt;
-                            console.log("[PromptManager] Updated content widget");
+                            log("[PromptManager] Updated content widget");
 
                             // Force UI update
                             this.setDirtyCanvas(true, true);
@@ -321,10 +325,10 @@ app.registerExtension({
                             console.error("[PromptManager] contentWidget not found!");
                         }
                     } else {
-                        console.warn("[PromptManager] No prompt in response");
+                        warn("[PromptManager] No prompt in response");
                     }
 
-                    console.log("[PromptManager] ===== fetchPromptContent END =====");
+                    log("[PromptManager] ===== fetchPromptContent END =====");
                 } catch (error) {
                     console.error("[PromptManager] ===== fetchPromptContent ERROR =====");
                     console.error("[PromptManager] Error:", error);
@@ -334,51 +338,51 @@ app.registerExtension({
 
             // Add method to fetch prompts
             nodeType.prototype.fetchPrompts = async function() {
-                console.log("[PromptManager] ===== fetchPrompts START =====");
+                log("[PromptManager] ===== fetchPrompts START =====");
 
                 try {
                     const cfg = await getConfig();
                     const apiUrl = cfg.api_url;
 
-                    console.log("[PromptManager] Using API URL:", apiUrl);
+                    log("[PromptManager] Using API URL:", apiUrl);
 
                     const url = `${apiUrl}/api/integrations/comfyui/prompts/list?user_id=1`;
-                    console.log("[PromptManager] Fetching from:", url);
+                    log("[PromptManager] Fetching from:", url);
 
                     const headers = getAuthHeaders();
                     delete headers["Content-Type"]; // Not needed for GET request
 
                     const response = await fetch(url, { headers });
-                    console.log("[PromptManager] Response status:", response.status);
+                    log("[PromptManager] Response status:", response.status);
 
                     const data = await response.json();
-                    console.log("[PromptManager] Response data:", data);
+                    log("[PromptManager] Response data:", data);
 
                     if (data.prompts && Array.isArray(data.prompts)) {
-                        console.log("[PromptManager] Processing", data.prompts.length, "prompts");
+                        log("[PromptManager] Processing", data.prompts.length, "prompts");
 
                         // Update the combo widget with the prompt list
                         if (this.promptWidget) {
-                            console.log("[PromptManager] Updating combo widget");
+                            log("[PromptManager] Updating combo widget");
                             this.promptWidget.options.values = data.prompts;
                             this.promptWidget.value = data.prompts[0] || "";
 
-                            console.log("[PromptManager] Widget updated:", {
+                            log("[PromptManager] Widget updated:", {
                                 values: this.promptWidget.options.values,
                                 value: this.promptWidget.value
                             });
 
                             // Force UI update
-                            console.log("[PromptManager] Forcing canvas update");
+                            log("[PromptManager] Forcing canvas update");
                             this.setDirtyCanvas(true, true);
                         } else {
                             console.error("[PromptManager] promptWidget not found!");
                         }
                     } else {
-                        console.warn("[PromptManager] No prompts in response or invalid format");
+                        warn("[PromptManager] No prompts in response or invalid format");
                     }
 
-                    console.log("[PromptManager] ===== fetchPrompts END =====");
+                    log("[PromptManager] ===== fetchPrompts END =====");
                 } catch (error) {
                     console.error("[PromptManager] ===== fetchPrompts ERROR =====");
                     console.error("[PromptManager] Error:", error);
@@ -386,7 +390,7 @@ app.registerExtension({
                 }
             };
 
-            console.log("[PromptManager] Extension setup complete");
+            log("[PromptManager] Extension setup complete");
         }
     },
 
@@ -398,12 +402,12 @@ app.registerExtension({
             type: "text",
             defaultValue: "",
             onChange: (value) => {
-                console.log("[PromptManager] API Key setting changed");
+                log("[PromptManager] API Key setting changed");
             }
         });
 
         // Set up Server-Sent Events (SSE) connection to Prompt Manager
-        console.log("[PromptManager] Setting up SSE connection");
+        log("[PromptManager] Setting up SSE connection");
 
         try {
             const cfg = await getConfig();
@@ -416,32 +420,32 @@ app.registerExtension({
                 sseUrl += `?token=${encodeURIComponent(apiKey)}`;
             }
 
-            console.log("[PromptManager] Connecting to SSE endpoint:", sseUrl.replace(/token=[^&]+/, 'token=***'));
+            log("[PromptManager] Connecting to SSE endpoint:", sseUrl.replace(/token=[^&]+/, 'token=***'));
 
             const eventSource = new EventSource(sseUrl);
 
             eventSource.onopen = () => {
-                console.log("[PromptManager] SSE connection established");
+                log("[PromptManager] SSE connection established");
             };
 
             eventSource.addEventListener("stackUpdate", (event) => {
-                console.log("[PromptManager] ===== RECEIVED stackUpdate EVENT =====");
-                console.log("[PromptManager] Raw event data:", event.data);
+                log("[PromptManager] ===== RECEIVED stackUpdate EVENT =====");
+                log("[PromptManager] Raw event data:", event.data);
 
                 try {
                     const data = JSON.parse(event.data);
-                    console.log("[PromptManager] Parsed data:", data);
+                    log("[PromptManager] Parsed data:", data);
 
                     const { display_id, prompt } = data;
 
                     if (!display_id) {
-                        console.warn("[PromptManager] No display_id in event");
+                        warn("[PromptManager] No display_id in event");
                         return;
                     }
 
                     // Find all PromptSelector nodes in the graph
                     const nodes = app.graph._nodes.filter(n => n.type === "PM_PromptSelector");
-                    console.log("[PromptManager] Found", nodes.length, "PromptSelector nodes");
+                    log("[PromptManager] Found", nodes.length, "PromptSelector nodes");
 
                     // Update matching nodes
                     nodes.forEach(node => {
@@ -450,7 +454,7 @@ app.registerExtension({
                         if (isActive) {
                             // Active mode: update if this stack is the active one
                             if (node._activeDisplayId && node._activeDisplayId === display_id) {
-                                console.log("[PromptManager] Updating active-mode node (stack content changed)");
+                                log("[PromptManager] Updating active-mode node (stack content changed)");
                                 if (node.contentWidget) {
                                     node.contentWidget.value = prompt || "";
                                     node.setDirtyCanvas(true, true);
@@ -460,7 +464,7 @@ app.registerExtension({
                             // Manual mode: update if this stack is selected
                             const selectedPrompt = node.promptWidget?.value;
                             if (selectedPrompt === display_id) {
-                                console.log("[PromptManager] Updating manual-mode node with new content");
+                                log("[PromptManager] Updating manual-mode node with new content");
                                 if (node.contentWidget) {
                                     node.contentWidget.value = prompt || "";
                                     node.setDirtyCanvas(true, true);
@@ -474,8 +478,8 @@ app.registerExtension({
             });
 
             eventSource.addEventListener("activeStackChanged", (event) => {
-                console.log("[PromptManager] ===== RECEIVED activeStackChanged EVENT =====");
-                console.log("[PromptManager] Raw event data:", event.data);
+                log("[PromptManager] ===== RECEIVED activeStackChanged EVENT =====");
+                log("[PromptManager] Raw event data:", event.data);
 
                 try {
                     const data = JSON.parse(event.data);
@@ -507,17 +511,17 @@ app.registerExtension({
 
             eventSource.onerror = (error) => {
                 console.error("[PromptManager] SSE connection error:", error);
-                console.log("[PromptManager] SSE readyState:", eventSource.readyState);
+                log("[PromptManager] SSE readyState:", eventSource.readyState);
 
                 if (eventSource.readyState === EventSource.CLOSED) {
-                    console.log("[PromptManager] SSE connection closed, will attempt reconnect");
+                    log("[PromptManager] SSE connection closed, will attempt reconnect");
                 }
             };
 
             // Store reference for potential cleanup
             window.promptManagerSSE = eventSource;
 
-            console.log("[PromptManager] SSE listener registered");
+            log("[PromptManager] SSE listener registered");
         } catch (error) {
             console.error("[PromptManager] Failed to set up SSE connection:", error);
         }

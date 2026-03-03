@@ -1,12 +1,13 @@
 from aiohttp import web
 import server
-from .config import API_URL
+from .config import API_URL, ENABLE_LOGGING
 
 @server.PromptServer.instance.routes.get("/prompt-manager/config")
 async def get_config(request):
     """Serve configuration to the frontend"""
     return web.json_response({
-        "api_url": API_URL
+        "api_url": API_URL,
+        "enable_logging": ENABLE_LOGGING
     })
 
 @server.PromptServer.instance.routes.post("/prompt-manager/webhook")

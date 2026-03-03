@@ -7,3 +7,4 @@ load_dotenv(env_path)
 
 # Configuration
 API_URL = os.getenv('API_URL', 'http://localhost:5173')
+ENABLE_LOGGING = os.getenv('ENABLE_LOGGING', '').lower() in ('1', 'true', 'yes')
