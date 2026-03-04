@@ -114,6 +114,7 @@ app.registerExtension({
                         warn("[PromptManager] No prompt selected/active to refresh");
                     }
                 });
+                refreshButton.tooltip = "Manually refresh the prompt if automatic syncing fails";
 
                 // Add divider between refresh/active controls and manual selection controls
                 this.addCustomWidget({
@@ -159,6 +160,7 @@ app.registerExtension({
                     },
                     { values: [] }
                 );
+                promptWidget.tooltip = "Manually select a prompt to load";
 
                 this.promptWidget = promptWidget;
                 this.listButton = listButton;

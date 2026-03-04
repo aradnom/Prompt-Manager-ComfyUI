@@ -1,5 +1,5 @@
 """
-@author: Your Name
+@author: solidstandingstone@pm.me
 @title: ComfyUI Prompt Manager
 @nickname: Prompt Manager
 @description: Custom nodes for managing prompts in ComfyUI
@@ -8,6 +8,8 @@
 import subprocess
 import sys
 import importlib
+from .nodes import PromptSelectorNode, SnapshotSelectorNode
+from . import server  # Register server routes
 
 def ensure_dependencies():
     requirements = {"requests": "requests", "dotenv": "python-dotenv"}
@@ -19,9 +21,6 @@ def ensure_dependencies():
             subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
 
 ensure_dependencies()
-
-from .nodes import PromptSelectorNode, SnapshotSelectorNode
-from . import server  # Register server routes
 
 NODE_CLASS_MAPPINGS = {
     "PM_PromptSelector": PromptSelectorNode,

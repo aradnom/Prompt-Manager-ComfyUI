@@ -88,6 +88,7 @@ app.registerExtension({
                 },
                 { values: [] }
             );
+            snapshotWidget.tooltip = "Manually select a snapshot to load";
 
             this.snapshotWidget = snapshotWidget;
             this.listButton = listButton;

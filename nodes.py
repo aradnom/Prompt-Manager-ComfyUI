@@ -13,6 +13,7 @@ class PromptSelectorNode:
             "required": {
                 "use_active_prompt": ("BOOLEAN", {
                     "default": False,
+                    "tooltip": "If checked, will always stay in sync with the current active prompt in the Prompt Manager",
                 }),
                 "prompt_content": ("STRING", {
                     "multiline": True,
