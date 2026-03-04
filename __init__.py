@@ -5,6 +5,21 @@
 @description: Custom nodes for managing prompts in ComfyUI
 """
 
+import subprocess
+import sys
+import importlib
+
+def ensure_dependencies():
+    requirements = {"requests": "requests", "dotenv": "python-dotenv"}
+    for module_name, pip_name in requirements.items():
+        try:
+            importlib.import_module(module_name)
+        except ImportError:
+            print(f"[PromptManager] Installing missing dependency: {pip_name}")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
+
+ensure_dependencies()
+
 from .nodes import PromptSelectorNode, SnapshotSelectorNode
 from . import server  # Register server routes
 
