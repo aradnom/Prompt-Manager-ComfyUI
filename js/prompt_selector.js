@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { ensureKey, decrypt, subscribePairingStatus, PAIRING_STATUS, retryPairing } from "./pairing.js";
 
 // Logging helpers - gated by ENABLE_LOGGING from .env via /prompt-manager/config
 let _loggingEnabled = false;
@@ -70,6 +71,21 @@ app.registerExtension({
                 // Connection status: null = checking, true = connected, false = disconnected
                 this._connectionStatus = null;
                 this.checkHeartbeat().catch(() => {});
+
+                // Pairing status for title-bar dot (idle/pairing/paired/failed)
+                this._pairingStatus = PAIRING_STATUS.IDLE;
+                const nodeRefP = this;
+                this._unsubPairing = subscribePairingStatus((s) => {
+                    nodeRefP._pairingStatus = s;
+                    if (nodeRefP.pairButton) {
+                        const shouldShow = (s === PAIRING_STATUS.FAILED);
+                        nodeRefP.pairButton.hidden = !shouldShow;
+                        nodeRefP.pairButton.computeSize = shouldShow
+                            ? undefined
+                            : () => [0, -4];
+                    }
+                    nodeRefP.setDirtyCanvas(true, true);
+                });
 
                 // Find the existing prompt_content widget that Python created
                 const contentWidget = this.widgets.find(w => w.name === "prompt_content");
@@ -165,6 +181,22 @@ app.registerExtension({
                 this.promptWidget = promptWidget;
                 this.listButton = listButton;
 
+                // Pair with Prompt Manager button — hidden unless pairing failed (denied)
+                const pairButton = this.addWidget("button", "Pair with Prompt Manager", null, () => {
+                    log("[PromptManager] ===== PAIR BUTTON CLICKED =====");
+                    retryPairing()
+                        .then(() => {
+                            // Once paired, refresh content
+                            this.fetchPrompts()
+                                .then(() => this.fetchActivePrompt())
+                                .catch(err => console.error("[PromptManager] Post-pair hydrate failed:", err));
+                        })
+                        .catch(err => log("[PromptManager] Pair retry failed:", err));
+                });
+                pairButton.hidden = true;
+                pairButton.computeSize = () => [0, -4];
+                this.pairButton = pairButton;
+
                 // Enable/disable manual-mode widgets based on active prompt toggle
                 this._updateActiveMode = function(isActive) {
                     if (this.listButton) {
@@ -230,10 +262,22 @@ app.registerExtension({
                 const dotRadius = 3;
                 const y = -LiteGraph.NODE_TITLE_HEIGHT / 2;
 
-                // Label
-                const label = this._connectionStatus === true ? "Connected"
-                    : this._connectionStatus === false ? "Disconnected"
-                    : "Checking...";
+                // Pairing takes precedence over connection status
+                const pairing = this._pairingStatus;
+                let label, color;
+                if (pairing === PAIRING_STATUS.PAIRING) {
+                    label = "Pairing...";
+                    color = "#FFA726";
+                } else if (this._connectionStatus === true) {
+                    label = "Connected";
+                    color = "#4CAF50";
+                } else if (this._connectionStatus === false) {
+                    label = "Disconnected";
+                    color = "#F44336";
+                } else {
+                    label = "Checking...";
+                    color = "#999";
+                }
 
                 ctx.font = "10px sans-serif";
                 ctx.textAlign = "right";
@@ -243,14 +287,7 @@ app.registerExtension({
                 ctx.fillStyle = "#ccc";
                 ctx.fillText(label, textX, y);
 
-                // Dot color
-                if (this._connectionStatus === true) {
-                    ctx.fillStyle = "#4CAF50";
-                } else if (this._connectionStatus === false) {
-                    ctx.fillStyle = "#F44336";
-                } else {
-                    ctx.fillStyle = "#999";
-                }
+                ctx.fillStyle = color;
 
                 ctx.beginPath();
                 ctx.arc(this.size[0] - dotRadius - 8, y, dotRadius, 0, Math.PI * 2);
@@ -263,6 +300,8 @@ app.registerExtension({
                 log("[PromptManager] ===== fetchActivePrompt START =====");
 
                 try {
+                    await ensureKey();
+
                     const cfg = await getConfig();
                     const apiUrl = cfg.api_url;
 
@@ -278,7 +317,8 @@ app.registerExtension({
                     const data = await response.json();
                     log("[PromptManager] Parsed data:", data);
 
-                    const { display_id, prompt } = data;
+                    const { display_id } = data;
+                    const prompt = await decrypt(data.prompt);
 
                     this._activeDisplayId = display_id || null;
 
@@ -308,6 +348,8 @@ app.registerExtension({
                 log("[PromptManager] Fetching content for:", displayId);
 
                 try {
+                    await ensureKey();
+
                     const cfg = await getConfig();
                     const apiUrl = cfg.api_url;
 
@@ -324,11 +366,12 @@ app.registerExtension({
                     log("[PromptManager] Response data:", data);
 
                     if (data.prompt) {
-                        log("[PromptManager] Got prompt content:", data.prompt.substring(0, 100) + "...");
+                        const prompt = await decrypt(data.prompt);
+                        log("[PromptManager] Got prompt content:", (prompt || "").substring(0, 100) + "...");
 
                         // Update the content widget
                         if (this.contentWidget) {
-                            this.contentWidget.value = data.prompt;
+                            this.contentWidget.value = prompt;
                             log("[PromptManager] Updated content widget");
 
                             // Force UI update
@@ -353,6 +396,8 @@ app.registerExtension({
                 log("[PromptManager] ===== fetchPrompts START =====");
 
                 try {
+                    await ensureKey();
+
                     const cfg = await getConfig();
                     const apiUrl = cfg.api_url;
 
@@ -373,13 +418,20 @@ app.registerExtension({
                     if (data.prompts && Array.isArray(data.prompts)) {
                         log("[PromptManager] Processing", data.prompts.length, "prompts");
 
+                        // Decrypt names up front (display_id stays plaintext).
+                        const decoded = await Promise.all(data.prompts.map(async p => {
+                            if (typeof p === "string") return p;
+                            const name = p.name != null ? await decrypt(p.name) : null;
+                            return { display_id: p.display_id, name };
+                        }));
+
                         // Build label <-> display_id maps
                         this._labelToId = new Map();
                         this._idToLabel = new Map();
 
                         // Count name occurrences to detect duplicates
                         const nameCounts = new Map();
-                        for (const p of data.prompts) {
+                        for (const p of decoded) {
                             const name = (typeof p === "object" && p.name) ? p.name : null;
                             if (name) {
                                 nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
@@ -387,7 +439,7 @@ app.registerExtension({
                         }
 
                         // Generate labels
-                        const labels = data.prompts.map(p => {
+                        const labels = decoded.map(p => {
                             // Support both old format (plain strings) and new format (objects)
                             if (typeof p === "string") {
                                 this._labelToId.set(p, p);
@@ -484,7 +536,7 @@ app.registerExtension({
                 log("[PromptManager] SSE connection established");
             };
 
-            eventSource.addEventListener("stackUpdate", (event) => {
+            eventSource.addEventListener("stackUpdate", async (event) => {
                 log("[PromptManager] ===== RECEIVED stackUpdate EVENT =====");
                 log("[PromptManager] Raw event data:", event.data);
 
@@ -492,7 +544,8 @@ app.registerExtension({
                     const data = JSON.parse(event.data);
                     log("[PromptManager] Parsed data:", data);
 
-                    const { display_id, prompt } = data;
+                    const { display_id } = data;
+                    const prompt = await decrypt(data.prompt);
 
                     if (!display_id) {
                         warn("[PromptManager] No display_id in event");
@@ -533,13 +586,14 @@ app.registerExtension({
                 }
             });
 
-            eventSource.addEventListener("activeStackChanged", (event) => {
+            eventSource.addEventListener("activeStackChanged", async (event) => {
                 log("[PromptManager] ===== RECEIVED activeStackChanged EVENT =====");
                 log("[PromptManager] Raw event data:", event.data);
 
                 try {
                     const data = JSON.parse(event.data);
-                    const { display_id, prompt } = data;
+                    const { display_id } = data;
+                    const prompt = await decrypt(data.prompt);
 
                     const nodes = app.graph._nodes.filter(n => n.type === "PM_PromptSelector");
 
