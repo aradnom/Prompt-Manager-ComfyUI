@@ -140,7 +140,7 @@ function flushToasts() {
     }
     return true;
 }
-function showToast(opts) {
+export function showToast(opts) {
     _toastQueue.push(opts);
     if (flushToasts()) return;
     if (_toastFlushTimer) return;
@@ -175,6 +175,9 @@ export async function authedFetch(url, init) {
 
 let _lastAuthToastAt = 0;
 export function showAuthErrorToast(code) {
+    // Don't nag the user when the field is simply empty — e.g. they've just
+    // cleared it to paste a new key. They'll get real feedback once they paste.
+    if (!getApiKey()) return;
     // Throttle so a burst of 401s doesn't spam the user.
     const now = Date.now();
     if (now - _lastAuthToastAt < 5000) return;
@@ -199,12 +202,65 @@ class PairingAuthError extends Error {
 }
 
 let _pairingPromise = null;
+let _pairingGeneration = 0;
+
+// Preflight the API key via the heartbeat endpoint. Returns true on 2xx,
+// throws PairingAuthError on 401. Any other outcome is treated as a soft
+// network error and returns false so the caller can continue (the pair
+// request itself will surface a harder error if things are really broken).
+async function preflightAuth() {
+    const cfg = await getConfig();
+    const apiKey = getApiKey();
+    const headers = {};
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    let response;
+    try {
+        response = await fetch(`${cfg.api_url}/api/integrations/comfyui/heartbeat`, { headers });
+    } catch (_) {
+        return false;
+    }
+    if (response.status === 401) {
+        let code = null;
+        try { code = (await response.clone().json())?.code || null; } catch (_) {}
+        const err = new PairingAuthError();
+        err.code = code;
+        throw err;
+    }
+    return response.ok;
+}
 
 async function runPairingLoop() {
+    const gen = ++_pairingGeneration;
+    const stale = () => gen !== _pairingGeneration;
     setStatus(STATUS.PAIRING);
-    while (true) {
+
+    // Confirm the key is valid before the long-poll so we can tell the user
+    // what's happening. If the key is bad, fail fast here.
+    try {
+        const ok = await preflightAuth();
+        if (stale()) return null;
+        if (ok) {
+            showToast({
+                severity: "info",
+                summary: "Prompt Manager",
+                detail: "API key accepted. Confirm the pairing request in Prompt Manager to finish connecting.",
+                life: 8000,
+            });
+        }
+    } catch (e) {
+        if (e instanceof PairingAuthError) {
+            log("preflight auth failed (code=" + e.code + ")");
+            setStatus(STATUS.FAILED);
+            showAuthErrorToast(e.code);
+            throw e;
+        }
+        // Other preflight errors: swallow and let the main loop handle it.
+    }
+
+    while (!stale()) {
         try {
             const result = await requestPairOnce();
+            if (stale()) return null;
             if (result.ok && result.derivedKey) {
                 _cachedKey = result.derivedKey;
                 await saveLocalKey(result.derivedKey);
@@ -255,7 +311,23 @@ async function runPairingLoop() {
             throw new PairingAbortError(String(e));
         }
         await new Promise(r => setTimeout(r, jitterDelay()));
+        if (stale()) return null;
     }
+    return null;
+}
+
+// Wipes all pairing state (cached key, in-flight pair, local key file) and
+// returns to IDLE. Safe to call mid-pair — a generation counter prevents any
+// in-flight loop from writing results after reset.
+export async function resetPairingState() {
+    _pairingGeneration++;
+    _cachedKey = null;
+    _cryptoKeyPromise = null;
+    _pairingPromise = null;
+    setStatus(STATUS.IDLE);
+    try {
+        await api.fetchApi("/prompt-manager/key", { method: "DELETE" });
+    } catch (e) { warn("resetPairingState: delete key failed:", e); }
 }
 
 export async function ensureKey() {

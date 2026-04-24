@@ -125,6 +125,23 @@ app.registerExtension({
             return result;
         };
 
+        // Re-initialize after an API key change.
+        nodeType.prototype.reinit = function() {
+            log("[SnapshotSelector] reinit - refreshing node state");
+            this._labelToId = new Map();
+            this._idToLabel = new Map();
+            this._connectionStatus = null;
+            if (this.snapshotWidget) {
+                this.snapshotWidget.options.values = [];
+                this.snapshotWidget.value = "";
+            }
+            this.setDirtyCanvas(true, true);
+
+            this.checkHeartbeat().catch(() => {});
+            this.fetchSnapshots()
+                .catch(err => console.error("[SnapshotSelector] reinit hydrate failed:", err));
+        };
+
         // onConfigure fires after saved widget values are restored
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function() {

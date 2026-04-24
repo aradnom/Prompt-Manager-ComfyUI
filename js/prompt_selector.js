@@ -1,6 +1,17 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { ensureKey, decrypt, subscribePairingStatus, PAIRING_STATUS, retryPairing, showAuthErrorToast, authedFetch } from "./pairing.js";
+import { ensureKey, decrypt, subscribePairingStatus, PAIRING_STATUS, retryPairing, showAuthErrorToast, authedFetch, resetPairingState, showToast } from "./pairing.js";
+
+let _activeEventSource = null;
+
+function reinitAllNodes() {
+    if (!app.graph) return;
+    for (const node of app.graph._nodes) {
+        if (typeof node.reinit === "function") {
+            try { node.reinit(); } catch (e) { console.error("[PromptManager] node.reinit failed:", e); }
+        }
+    }
+}
 
 // Logging helpers - gated by ENABLE_LOGGING from .env via /prompt-manager/config
 let _loggingEnabled = false;
@@ -216,6 +227,26 @@ app.registerExtension({
                 log("[PromptManager] Final widgets:", this.widgets.map(w => ({name: w.name, type: w.type})));
 
                 return result;
+            };
+
+            // Re-initialize after an API key change: clear cached lookups,
+            // redo the heartbeat, then re-hydrate prompts + active content.
+            nodeType.prototype.reinit = function() {
+                log("[PromptManager] reinit - refreshing node state");
+                this._labelToId = new Map();
+                this._idToLabel = new Map();
+                this._activeDisplayId = null;
+                this._connectionStatus = null;
+                if (this.promptWidget) {
+                    this.promptWidget.options.values = [];
+                    this.promptWidget.value = "";
+                }
+                this.setDirtyCanvas(true, true);
+
+                this.checkHeartbeat().catch(() => {});
+                this.fetchPrompts()
+                    .then(() => this.fetchActivePrompt())
+                    .catch(err => console.error("[PromptManager] reinit hydrate failed:", err));
             };
 
             // onConfigure fires after saved widget values are restored
@@ -503,56 +534,85 @@ app.registerExtension({
     },
 
     async setup() {
-        // Register setting for API Key
+        // Register setting for API Key. onChange fires on initial registration
+        // with (newValue, oldValue) — ignore if they match so startup doesn't
+        // spuriously trigger a re-init.
+        let _initialApiKey = getApiKey();
         app.ui.settings.addSetting({
             id: "PromptManager.ApiKey",
             name: "Prompt Manager API Key",
             type: "text",
             defaultValue: "",
-            onChange: (value) => {
-                log("[PromptManager] API Key setting changed");
+            onChange: async (value, oldValue) => {
+                if (value === _initialApiKey && oldValue === undefined) return;
+                _initialApiKey = value;
+                log("[PromptManager] API Key changed - re-initializing");
+                await resetPairingState();
+                await connectSSE();
+                reinitAllNodes();
             }
         });
 
-        // Set up Server-Sent Events (SSE) connection to Prompt Manager
-        log("[PromptManager] Setting up SSE connection");
+        // One-time startup nudge when no API key is configured. Fires only
+        // here, not in onChange, so clearing the field to paste a new key
+        // doesn't re-trigger it.
+        if (!getApiKey()) {
+            showToast({
+                severity: "info",
+                summary: "Prompt Manager",
+                detail: "Enter your API key in Settings → PromptManager to get started.",
+            });
+        }
 
+        await connectSSE();
+    }
+});
+
+async function connectSSE() {
+    // Close any existing connection before opening a new one.
+    if (_activeEventSource) {
+        try { _activeEventSource.close(); } catch (_) {}
+        _activeEventSource = null;
+    }
+
+    const log = (...a) => console.log("[PromptManager]", ...a);
+    const warn = (...a) => console.warn("[PromptManager]", ...a);
+
+    try {
+        const response = await api.fetchApi("/prompt-manager/config");
+        const cfg = await response.json();
+        const apiUrl = cfg.api_url;
+        const apiKey = app.ui.settings.getSettingValue("PromptManager.ApiKey", "");
+
+        // Preflight the API key via heartbeat — EventSource can't expose
+        // status codes, so we surface auth failures here before opening SSE.
         try {
-            const cfg = await getConfig();
-            const apiUrl = cfg.api_url;
-            const apiKey = getApiKey();
-
-            // Preflight the API key via heartbeat — EventSource can't expose
-            // status codes, so we surface auth failures here before opening SSE.
-            try {
-                const preflightHeaders = {};
-                if (apiKey) preflightHeaders["Authorization"] = `Bearer ${apiKey}`;
-                const preflight = await fetch(
-                    `${apiUrl}/api/integrations/comfyui/heartbeat`,
-                    { headers: preflightHeaders }
-                );
-                if (preflight.status === 401) {
-                    let code = null;
-                    try { code = (await preflight.clone().json())?.code || null; } catch (_) {}
-                    log("[PromptManager] SSE preflight 401 (code=" + code + ") - skipping SSE setup");
-                    showAuthErrorToast(code);
-                    return;
-                }
-            } catch (e) {
-                warn("[PromptManager] SSE preflight errored:", e);
-                // Don't block SSE on network errors — it will reconnect when the
-                // server comes back up.
+            const preflightHeaders = {};
+            if (apiKey) preflightHeaders["Authorization"] = `Bearer ${apiKey}`;
+            const preflight = await fetch(
+                `${apiUrl}/api/integrations/comfyui/heartbeat`,
+                { headers: preflightHeaders }
+            );
+            if (preflight.status === 401) {
+                let code = null;
+                try { code = (await preflight.clone().json())?.code || null; } catch (_) {}
+                showAuthErrorToast(code);
+                return;
             }
+        } catch (e) {
+            warn("SSE preflight errored:", e);
+            // Don't block SSE on network errors — it will reconnect when the
+            // server comes back up.
+        }
 
-            // EventSource doesn't support custom headers, so pass token as query param
-            let sseUrl = `${apiUrl}/api/integrations/comfyui/events`;
-            if (apiKey) {
-                sseUrl += `?token=${encodeURIComponent(apiKey)}`;
-            }
+        // EventSource doesn't support custom headers, so pass token as query param
+        let sseUrl = `${apiUrl}/api/integrations/comfyui/events`;
+        if (apiKey) {
+            sseUrl += `?token=${encodeURIComponent(apiKey)}`;
+        }
 
-            log("[PromptManager] Connecting to SSE endpoint:", sseUrl.replace(/token=[^&]+/, 'token=***'));
-
-            const eventSource = new EventSource(sseUrl);
+        const eventSource = new EventSource(sseUrl);
+        _activeEventSource = eventSource;
 
             eventSource.onopen = () => {
                 log("[PromptManager] SSE connection established");
@@ -652,12 +712,9 @@ app.registerExtension({
                 }
             };
 
-            // Store reference for potential cleanup
-            window.promptManagerSSE = eventSource;
-
-            log("[PromptManager] SSE listener registered");
-        } catch (error) {
-            console.error("[PromptManager] Failed to set up SSE connection:", error);
-        }
+        window.promptManagerSSE = eventSource;
+        log("SSE listener registered");
+    } catch (error) {
+        console.error("[PromptManager] Failed to set up SSE connection:", error);
     }
-});
+}
