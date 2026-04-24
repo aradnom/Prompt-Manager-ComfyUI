@@ -254,6 +254,16 @@ function isEnvelope(v) {
 // during the encryption rollout). Always returns a string on success.
 export async function decrypt(value) {
     if (value == null) return value;
+    // Envelopes may arrive as JSON-stringified objects — try to parse.
+    if (typeof value === "string") {
+        const trimmed = value.trimStart();
+        if (trimmed.startsWith("{")) {
+            try {
+                const parsed = JSON.parse(value);
+                if (isEnvelope(parsed)) value = parsed;
+            } catch (_) { /* not JSON, fall through as plain string */ }
+        }
+    }
     if (!isEnvelope(value)) return value;
 
     const key = await getCryptoKey();
