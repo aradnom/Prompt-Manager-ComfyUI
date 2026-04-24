@@ -113,6 +113,13 @@ async function requestPairOnce() {
         body: JSON.stringify({ fingerprint }),
     });
 
+    if (response.status === 401) {
+        let code = null;
+        try { code = (await response.clone().json())?.code || null; } catch (_) {}
+        const err = new PairingAuthError();
+        err.code = code;
+        throw err;
+    }
     if (!response.ok) {
         throw new Error(`pair request failed: HTTP ${response.status}`);
     }
@@ -120,12 +127,63 @@ async function requestPairOnce() {
     return response.json();
 }
 
-function showToast(opts) {
-    try {
-        app.extensionManager?.toast?.add?.(opts);
-    } catch (e) {
-        warn("toast failed:", e);
+// ComfyUI's extensionManager.toast isn't available during early extension
+// setup — queue and retry until it is.
+const _toastQueue = [];
+let _toastFlushTimer = null;
+function flushToasts() {
+    const t = app.extensionManager?.toast;
+    if (!t?.add) return false;
+    while (_toastQueue.length) {
+        const opts = _toastQueue.shift();
+        try { t.add(opts); } catch (e) { warn("toast failed:", e); }
     }
+    return true;
+}
+function showToast(opts) {
+    _toastQueue.push(opts);
+    if (flushToasts()) return;
+    if (_toastFlushTimer) return;
+    let attempts = 0;
+    _toastFlushTimer = setInterval(() => {
+        attempts++;
+        if (flushToasts() || attempts > 40) {
+            clearInterval(_toastFlushTimer);
+            _toastFlushTimer = null;
+        }
+    }, 250); // up to ~10s of retry
+}
+
+const _AUTH_MESSAGES = {
+    missing_token: "No API key configured. Add one under Settings → Prompt Manager.",
+    invalid_token: "API key is invalid. Generate new credentials on prompts.rodeo/account and paste them into Settings → Prompt Manager.",
+    revoked_token: "API key has been revoked. Generate new credentials on prompts.rodeo/account and paste them into Settings → Prompt Manager.",
+};
+const _AUTH_DEFAULT = "API key rejected. Generate new credentials on prompts.rodeo/account and paste them into Settings → Prompt Manager.";
+
+// Drop-in replacement for fetch() that surfaces 401 responses as a user-facing
+// toast. Returns the raw Response for the caller to handle normally.
+export async function authedFetch(url, init) {
+    const response = await fetch(url, init);
+    if (response.status === 401) {
+        let code = null;
+        try { code = (await response.clone().json())?.code || null; } catch (_) {}
+        showAuthErrorToast(code);
+    }
+    return response;
+}
+
+let _lastAuthToastAt = 0;
+export function showAuthErrorToast(code) {
+    // Throttle so a burst of 401s doesn't spam the user.
+    const now = Date.now();
+    if (now - _lastAuthToastAt < 5000) return;
+    _lastAuthToastAt = now;
+    showToast({
+        severity: "error",
+        summary: "Prompt Manager",
+        detail: _AUTH_MESSAGES[code] || _AUTH_DEFAULT,
+    });
 }
 
 class PairingDeniedError extends Error {
@@ -134,6 +192,10 @@ class PairingDeniedError extends Error {
 
 class PairingAbortError extends Error {
     constructor(msg) { super(msg); this.name = "PairingAbortError"; }
+}
+
+class PairingAuthError extends Error {
+    constructor() { super("Invalid or missing API key"); this.name = "PairingAuthError"; }
 }
 
 let _pairingPromise = null;
@@ -175,6 +237,12 @@ async function runPairingLoop() {
             });
         } catch (e) {
             if (e instanceof PairingDeniedError) throw e;
+            if (e instanceof PairingAuthError) {
+                log("pair attempt rejected - bad API key (code=" + e.code + ")");
+                setStatus(STATUS.FAILED);
+                showAuthErrorToast(e.code);
+                throw e;
+            }
             // Server error or network failure — stop the loop and wait for the
             // user to retry via the Pair button rather than hammering.
             warn("pair attempt errored:", e);

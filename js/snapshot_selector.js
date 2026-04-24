@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { ensureKey, decrypt, subscribePairingStatus, PAIRING_STATUS, retryPairing } from "./pairing.js";
+import { ensureKey, decrypt, subscribePairingStatus, PAIRING_STATUS, retryPairing, authedFetch } from "./pairing.js";
 
 // Logging helpers - gated by ENABLE_LOGGING from .env via /prompt-manager/config
 let _loggingEnabled = false;
@@ -142,7 +142,7 @@ app.registerExtension({
         nodeType.prototype.checkHeartbeat = async function() {
             try {
                 const cfg = await getConfig();
-                const response = await fetch(
+                const response = await authedFetch(
                     `${cfg.api_url}/api/integrations/comfyui/heartbeat`,
                     { headers: getAuthHeaders() }
                 );
@@ -202,7 +202,7 @@ app.registerExtension({
                 await ensureKey();
                 const cfg = await getConfig();
                 const url = `${cfg.api_url}/api/integrations/comfyui/snapshots/get?display_id=${encodeURIComponent(displayId)}`;
-                const response = await fetch(url, { headers: getAuthHeaders() });
+                const response = await authedFetch(url, { headers: getAuthHeaders() });
                 const data = await response.json();
 
                 if (data.prompt) {
@@ -227,7 +227,7 @@ app.registerExtension({
                 await ensureKey();
                 const cfg = await getConfig();
                 const url = `${cfg.api_url}/api/integrations/comfyui/snapshots/list`;
-                const response = await fetch(url, { headers: getAuthHeaders() });
+                const response = await authedFetch(url, { headers: getAuthHeaders() });
                 const data = await response.json();
 
                 if (data.snapshots && Array.isArray(data.snapshots)) {

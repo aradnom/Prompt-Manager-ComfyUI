@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { ensureKey, decrypt, subscribePairingStatus, PAIRING_STATUS, retryPairing } from "./pairing.js";
+import { ensureKey, decrypt, subscribePairingStatus, PAIRING_STATUS, retryPairing, showAuthErrorToast, authedFetch } from "./pairing.js";
 
 // Logging helpers - gated by ENABLE_LOGGING from .env via /prompt-manager/config
 let _loggingEnabled = false;
@@ -245,7 +245,7 @@ app.registerExtension({
                     const headers = getAuthHeaders();
                     delete headers["Content-Type"];
 
-                    const response = await fetch(`${apiUrl}/api/integrations/comfyui/heartbeat`, { headers });
+                    const response = await authedFetch(`${apiUrl}/api/integrations/comfyui/heartbeat`, { headers });
                     this._connectionStatus = response.ok;
                 } catch (error) {
                     this._connectionStatus = false;
@@ -311,7 +311,7 @@ app.registerExtension({
                     const headers = getAuthHeaders();
                     delete headers["Content-Type"];
 
-                    const response = await fetch(url, { headers });
+                    const response = await authedFetch(url, { headers });
                     log("[PromptManager] Response status:", response.status);
 
                     const data = await response.json();
@@ -359,7 +359,7 @@ app.registerExtension({
                     const headers = getAuthHeaders();
                     delete headers["Content-Type"]; // Not needed for GET request
 
-                    const response = await fetch(url, { headers });
+                    const response = await authedFetch(url, { headers });
                     log("[PromptManager] Response status:", response.status);
 
                     const data = await response.json();
@@ -409,7 +409,7 @@ app.registerExtension({
                     const headers = getAuthHeaders();
                     delete headers["Content-Type"]; // Not needed for GET request
 
-                    const response = await fetch(url, { headers });
+                    const response = await authedFetch(url, { headers });
                     log("[PromptManager] Response status:", response.status);
 
                     const data = await response.json();
@@ -521,6 +521,28 @@ app.registerExtension({
             const cfg = await getConfig();
             const apiUrl = cfg.api_url;
             const apiKey = getApiKey();
+
+            // Preflight the API key via heartbeat — EventSource can't expose
+            // status codes, so we surface auth failures here before opening SSE.
+            try {
+                const preflightHeaders = {};
+                if (apiKey) preflightHeaders["Authorization"] = `Bearer ${apiKey}`;
+                const preflight = await fetch(
+                    `${apiUrl}/api/integrations/comfyui/heartbeat`,
+                    { headers: preflightHeaders }
+                );
+                if (preflight.status === 401) {
+                    let code = null;
+                    try { code = (await preflight.clone().json())?.code || null; } catch (_) {}
+                    log("[PromptManager] SSE preflight 401 (code=" + code + ") - skipping SSE setup");
+                    showAuthErrorToast(code);
+                    return;
+                }
+            } catch (e) {
+                warn("[PromptManager] SSE preflight errored:", e);
+                // Don't block SSE on network errors — it will reconnect when the
+                // server comes back up.
+            }
 
             // EventSource doesn't support custom headers, so pass token as query param
             let sseUrl = `${apiUrl}/api/integrations/comfyui/events`;
