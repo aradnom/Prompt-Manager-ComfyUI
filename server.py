@@ -1,14 +1,42 @@
 from aiohttp import web
 import server
 from .config import API_URL, ENABLE_LOGGING
+from . import pairing
 
 @server.PromptServer.instance.routes.get("/prompt-manager/config")
 async def get_config(request):
     """Serve configuration to the frontend"""
+    info = pairing.get_host_info()
     return web.json_response({
         "api_url": API_URL,
-        "enable_logging": ENABLE_LOGGING
+        "enable_logging": ENABLE_LOGGING,
+        "host": info["host"],
+        "platform": info["platform"],
     })
+
+
+@server.PromptServer.instance.routes.get("/prompt-manager/key")
+async def get_key(request):
+    return web.json_response({"key": pairing.read_key()})
+
+
+@server.PromptServer.instance.routes.post("/prompt-manager/key")
+async def post_key(request):
+    try:
+        data = await request.json()
+        key = data.get("key")
+        if not key or not isinstance(key, str):
+            return web.json_response({"error": "Missing key"}, status=400)
+        pairing.write_key(key)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@server.PromptServer.instance.routes.delete("/prompt-manager/key")
+async def delete_key(request):
+    pairing.delete_key()
+    return web.json_response({"ok": True})
 
 @server.PromptServer.instance.routes.post("/prompt-manager/webhook")
 async def prompt_update_webhook(request):

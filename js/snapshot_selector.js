@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { ensureKey, decrypt, subscribePairingStatus, PAIRING_STATUS, retryPairing, authedFetch } from "./pairing.js";
 
 // Logging helpers - gated by ENABLE_LOGGING from .env via /prompt-manager/config
 let _loggingEnabled = false;
@@ -57,6 +58,21 @@ app.registerExtension({
             this._connectionStatus = null;
             this.checkHeartbeat().catch(() => {});
 
+            // Pairing status
+            this._pairingStatus = PAIRING_STATUS.IDLE;
+            const nodeRefP = this;
+            this._unsubPairing = subscribePairingStatus((s) => {
+                nodeRefP._pairingStatus = s;
+                if (nodeRefP.pairButton) {
+                    const shouldShow = (s === PAIRING_STATUS.FAILED);
+                    nodeRefP.pairButton.hidden = !shouldShow;
+                    nodeRefP.pairButton.computeSize = shouldShow
+                        ? undefined
+                        : () => [0, -4];
+                }
+                nodeRefP.setDirtyCanvas(true, true);
+            });
+
             // Find the existing snapshot_content widget that Python created
             const contentWidget = this.widgets.find(w => w.name === "snapshot_content");
             if (contentWidget) {
@@ -93,7 +109,37 @@ app.registerExtension({
             this.snapshotWidget = snapshotWidget;
             this.listButton = listButton;
 
+            // Pair with Prompt Manager button — hidden unless pairing failed (denied)
+            const pairButton = this.addWidget("button", "Pair with Prompt Manager", null, () => {
+                log("[SnapshotSelector] ===== PAIR BUTTON CLICKED =====");
+                retryPairing()
+                    .then(() => {
+                        this.fetchSnapshots().catch(err => console.error("[SnapshotSelector] Post-pair hydrate failed:", err));
+                    })
+                    .catch(err => log("[SnapshotSelector] Pair retry failed:", err));
+            });
+            pairButton.hidden = true;
+            pairButton.computeSize = () => [0, -4];
+            this.pairButton = pairButton;
+
             return result;
+        };
+
+        // Re-initialize after an API key change.
+        nodeType.prototype.reinit = function() {
+            log("[SnapshotSelector] reinit - refreshing node state");
+            this._labelToId = new Map();
+            this._idToLabel = new Map();
+            this._connectionStatus = null;
+            if (this.snapshotWidget) {
+                this.snapshotWidget.options.values = [];
+                this.snapshotWidget.value = "";
+            }
+            this.setDirtyCanvas(true, true);
+
+            this.checkHeartbeat().catch(() => {});
+            this.fetchSnapshots()
+                .catch(err => console.error("[SnapshotSelector] reinit hydrate failed:", err));
         };
 
         // onConfigure fires after saved widget values are restored
@@ -113,7 +159,7 @@ app.registerExtension({
         nodeType.prototype.checkHeartbeat = async function() {
             try {
                 const cfg = await getConfig();
-                const response = await fetch(
+                const response = await authedFetch(
                     `${cfg.api_url}/api/integrations/comfyui/heartbeat`,
                     { headers: getAuthHeaders() }
                 );
@@ -133,9 +179,21 @@ app.registerExtension({
             const dotRadius = 3;
             const y = -LiteGraph.NODE_TITLE_HEIGHT / 2;
 
-            const label = this._connectionStatus === true ? "Connected"
-                : this._connectionStatus === false ? "Disconnected"
-                : "Checking...";
+            const pairing = this._pairingStatus;
+            let label, color;
+            if (pairing === PAIRING_STATUS.PAIRING) {
+                label = "Pairing...";
+                color = "#FFA726";
+            } else if (this._connectionStatus === true) {
+                label = "Connected";
+                color = "#4CAF50";
+            } else if (this._connectionStatus === false) {
+                label = "Disconnected";
+                color = "#F44336";
+            } else {
+                label = "Checking...";
+                color = "#999";
+            }
 
             ctx.font = "10px sans-serif";
             ctx.textAlign = "right";
@@ -145,13 +203,7 @@ app.registerExtension({
             ctx.fillStyle = "#ccc";
             ctx.fillText(label, textX, y);
 
-            if (this._connectionStatus === true) {
-                ctx.fillStyle = "#4CAF50";
-            } else if (this._connectionStatus === false) {
-                ctx.fillStyle = "#F44336";
-            } else {
-                ctx.fillStyle = "#999";
-            }
+            ctx.fillStyle = color;
 
             ctx.beginPath();
             ctx.arc(this.size[0] - dotRadius - 8, y, dotRadius, 0, Math.PI * 2);
@@ -164,14 +216,16 @@ app.registerExtension({
             log("[SnapshotSelector] Fetching content for:", displayId);
 
             try {
+                await ensureKey();
                 const cfg = await getConfig();
                 const url = `${cfg.api_url}/api/integrations/comfyui/snapshots/get?display_id=${encodeURIComponent(displayId)}`;
-                const response = await fetch(url, { headers: getAuthHeaders() });
+                const response = await authedFetch(url, { headers: getAuthHeaders() });
                 const data = await response.json();
 
                 if (data.prompt) {
+                    const prompt = await decrypt(data.prompt);
                     if (this.contentWidget) {
-                        this.contentWidget.value = data.prompt;
+                        this.contentWidget.value = prompt;
                         this.setDirtyCanvas(true, true);
                     }
                 } else {
@@ -187,13 +241,21 @@ app.registerExtension({
             log("[SnapshotSelector] ===== fetchSnapshots START =====");
 
             try {
+                await ensureKey();
                 const cfg = await getConfig();
                 const url = `${cfg.api_url}/api/integrations/comfyui/snapshots/list`;
-                const response = await fetch(url, { headers: getAuthHeaders() });
+                const response = await authedFetch(url, { headers: getAuthHeaders() });
                 const data = await response.json();
 
                 if (data.snapshots && Array.isArray(data.snapshots)) {
                     log("[SnapshotSelector] Processing", data.snapshots.length, "snapshots");
+
+                    // Decrypt names up front (display_id stays plaintext).
+                    const decoded = await Promise.all(data.snapshots.map(async s => {
+                        if (typeof s === "string") return s;
+                        const name = s.name != null ? await decrypt(s.name) : null;
+                        return { display_id: s.display_id, name };
+                    }));
 
                     // Build label <-> display_id maps
                     this._labelToId = new Map();
@@ -201,7 +263,7 @@ app.registerExtension({
 
                     // Count name occurrences to detect duplicates
                     const nameCounts = new Map();
-                    for (const s of data.snapshots) {
+                    for (const s of decoded) {
                         const name = (typeof s === "object" && s.name) ? s.name : null;
                         if (name) {
                             nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
@@ -209,7 +271,7 @@ app.registerExtension({
                     }
 
                     // Generate labels
-                    const labels = data.snapshots.map(s => {
+                    const labels = decoded.map(s => {
                         if (typeof s === "string") {
                             this._labelToId.set(s, s);
                             this._idToLabel.set(s, s);

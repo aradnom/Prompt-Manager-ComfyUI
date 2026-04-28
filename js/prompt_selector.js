@@ -1,5 +1,17 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { ensureKey, decrypt, subscribePairingStatus, PAIRING_STATUS, retryPairing, showAuthErrorToast, authedFetch, resetPairingState, showToast } from "./pairing.js";
+
+let _activeEventSource = null;
+
+function reinitAllNodes() {
+    if (!app.graph) return;
+    for (const node of app.graph._nodes) {
+        if (typeof node.reinit === "function") {
+            try { node.reinit(); } catch (e) { console.error("[PromptManager] node.reinit failed:", e); }
+        }
+    }
+}
 
 // Logging helpers - gated by ENABLE_LOGGING from .env via /prompt-manager/config
 let _loggingEnabled = false;
@@ -70,6 +82,21 @@ app.registerExtension({
                 // Connection status: null = checking, true = connected, false = disconnected
                 this._connectionStatus = null;
                 this.checkHeartbeat().catch(() => {});
+
+                // Pairing status for title-bar dot (idle/pairing/paired/failed)
+                this._pairingStatus = PAIRING_STATUS.IDLE;
+                const nodeRefP = this;
+                this._unsubPairing = subscribePairingStatus((s) => {
+                    nodeRefP._pairingStatus = s;
+                    if (nodeRefP.pairButton) {
+                        const shouldShow = (s === PAIRING_STATUS.FAILED);
+                        nodeRefP.pairButton.hidden = !shouldShow;
+                        nodeRefP.pairButton.computeSize = shouldShow
+                            ? undefined
+                            : () => [0, -4];
+                    }
+                    nodeRefP.setDirtyCanvas(true, true);
+                });
 
                 // Find the existing prompt_content widget that Python created
                 const contentWidget = this.widgets.find(w => w.name === "prompt_content");
@@ -165,6 +192,22 @@ app.registerExtension({
                 this.promptWidget = promptWidget;
                 this.listButton = listButton;
 
+                // Pair with Prompt Manager button — hidden unless pairing failed (denied)
+                const pairButton = this.addWidget("button", "Pair with Prompt Manager", null, () => {
+                    log("[PromptManager] ===== PAIR BUTTON CLICKED =====");
+                    retryPairing()
+                        .then(() => {
+                            // Once paired, refresh content
+                            this.fetchPrompts()
+                                .then(() => this.fetchActivePrompt())
+                                .catch(err => console.error("[PromptManager] Post-pair hydrate failed:", err));
+                        })
+                        .catch(err => log("[PromptManager] Pair retry failed:", err));
+                });
+                pairButton.hidden = true;
+                pairButton.computeSize = () => [0, -4];
+                this.pairButton = pairButton;
+
                 // Enable/disable manual-mode widgets based on active prompt toggle
                 this._updateActiveMode = function(isActive) {
                     if (this.listButton) {
@@ -184,6 +227,26 @@ app.registerExtension({
                 log("[PromptManager] Final widgets:", this.widgets.map(w => ({name: w.name, type: w.type})));
 
                 return result;
+            };
+
+            // Re-initialize after an API key change: clear cached lookups,
+            // redo the heartbeat, then re-hydrate prompts + active content.
+            nodeType.prototype.reinit = function() {
+                log("[PromptManager] reinit - refreshing node state");
+                this._labelToId = new Map();
+                this._idToLabel = new Map();
+                this._activeDisplayId = null;
+                this._connectionStatus = null;
+                if (this.promptWidget) {
+                    this.promptWidget.options.values = [];
+                    this.promptWidget.value = "";
+                }
+                this.setDirtyCanvas(true, true);
+
+                this.checkHeartbeat().catch(() => {});
+                this.fetchPrompts()
+                    .then(() => this.fetchActivePrompt())
+                    .catch(err => console.error("[PromptManager] reinit hydrate failed:", err));
             };
 
             // onConfigure fires after saved widget values are restored
@@ -213,7 +276,7 @@ app.registerExtension({
                     const headers = getAuthHeaders();
                     delete headers["Content-Type"];
 
-                    const response = await fetch(`${apiUrl}/api/integrations/comfyui/heartbeat`, { headers });
+                    const response = await authedFetch(`${apiUrl}/api/integrations/comfyui/heartbeat`, { headers });
                     this._connectionStatus = response.ok;
                 } catch (error) {
                     this._connectionStatus = false;
@@ -230,10 +293,22 @@ app.registerExtension({
                 const dotRadius = 3;
                 const y = -LiteGraph.NODE_TITLE_HEIGHT / 2;
 
-                // Label
-                const label = this._connectionStatus === true ? "Connected"
-                    : this._connectionStatus === false ? "Disconnected"
-                    : "Checking...";
+                // Pairing takes precedence over connection status
+                const pairing = this._pairingStatus;
+                let label, color;
+                if (pairing === PAIRING_STATUS.PAIRING) {
+                    label = "Pairing...";
+                    color = "#FFA726";
+                } else if (this._connectionStatus === true) {
+                    label = "Connected";
+                    color = "#4CAF50";
+                } else if (this._connectionStatus === false) {
+                    label = "Disconnected";
+                    color = "#F44336";
+                } else {
+                    label = "Checking...";
+                    color = "#999";
+                }
 
                 ctx.font = "10px sans-serif";
                 ctx.textAlign = "right";
@@ -243,14 +318,7 @@ app.registerExtension({
                 ctx.fillStyle = "#ccc";
                 ctx.fillText(label, textX, y);
 
-                // Dot color
-                if (this._connectionStatus === true) {
-                    ctx.fillStyle = "#4CAF50";
-                } else if (this._connectionStatus === false) {
-                    ctx.fillStyle = "#F44336";
-                } else {
-                    ctx.fillStyle = "#999";
-                }
+                ctx.fillStyle = color;
 
                 ctx.beginPath();
                 ctx.arc(this.size[0] - dotRadius - 8, y, dotRadius, 0, Math.PI * 2);
@@ -263,6 +331,8 @@ app.registerExtension({
                 log("[PromptManager] ===== fetchActivePrompt START =====");
 
                 try {
+                    await ensureKey();
+
                     const cfg = await getConfig();
                     const apiUrl = cfg.api_url;
 
@@ -272,13 +342,14 @@ app.registerExtension({
                     const headers = getAuthHeaders();
                     delete headers["Content-Type"];
 
-                    const response = await fetch(url, { headers });
+                    const response = await authedFetch(url, { headers });
                     log("[PromptManager] Response status:", response.status);
 
                     const data = await response.json();
                     log("[PromptManager] Parsed data:", data);
 
-                    const { display_id, prompt } = data;
+                    const { display_id } = data;
+                    const prompt = await decrypt(data.prompt);
 
                     this._activeDisplayId = display_id || null;
 
@@ -308,6 +379,8 @@ app.registerExtension({
                 log("[PromptManager] Fetching content for:", displayId);
 
                 try {
+                    await ensureKey();
+
                     const cfg = await getConfig();
                     const apiUrl = cfg.api_url;
 
@@ -317,18 +390,19 @@ app.registerExtension({
                     const headers = getAuthHeaders();
                     delete headers["Content-Type"]; // Not needed for GET request
 
-                    const response = await fetch(url, { headers });
+                    const response = await authedFetch(url, { headers });
                     log("[PromptManager] Response status:", response.status);
 
                     const data = await response.json();
                     log("[PromptManager] Response data:", data);
 
                     if (data.prompt) {
-                        log("[PromptManager] Got prompt content:", data.prompt.substring(0, 100) + "...");
+                        const prompt = await decrypt(data.prompt);
+                        log("[PromptManager] Got prompt content:", (prompt || "").substring(0, 100) + "...");
 
                         // Update the content widget
                         if (this.contentWidget) {
-                            this.contentWidget.value = data.prompt;
+                            this.contentWidget.value = prompt;
                             log("[PromptManager] Updated content widget");
 
                             // Force UI update
@@ -353,6 +427,8 @@ app.registerExtension({
                 log("[PromptManager] ===== fetchPrompts START =====");
 
                 try {
+                    await ensureKey();
+
                     const cfg = await getConfig();
                     const apiUrl = cfg.api_url;
 
@@ -364,7 +440,7 @@ app.registerExtension({
                     const headers = getAuthHeaders();
                     delete headers["Content-Type"]; // Not needed for GET request
 
-                    const response = await fetch(url, { headers });
+                    const response = await authedFetch(url, { headers });
                     log("[PromptManager] Response status:", response.status);
 
                     const data = await response.json();
@@ -373,13 +449,20 @@ app.registerExtension({
                     if (data.prompts && Array.isArray(data.prompts)) {
                         log("[PromptManager] Processing", data.prompts.length, "prompts");
 
+                        // Decrypt names up front (display_id stays plaintext).
+                        const decoded = await Promise.all(data.prompts.map(async p => {
+                            if (typeof p === "string") return p;
+                            const name = p.name != null ? await decrypt(p.name) : null;
+                            return { display_id: p.display_id, name };
+                        }));
+
                         // Build label <-> display_id maps
                         this._labelToId = new Map();
                         this._idToLabel = new Map();
 
                         // Count name occurrences to detect duplicates
                         const nameCounts = new Map();
-                        for (const p of data.prompts) {
+                        for (const p of decoded) {
                             const name = (typeof p === "object" && p.name) ? p.name : null;
                             if (name) {
                                 nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
@@ -387,7 +470,7 @@ app.registerExtension({
                         }
 
                         // Generate labels
-                        const labels = data.prompts.map(p => {
+                        const labels = decoded.map(p => {
                             // Support both old format (plain strings) and new format (objects)
                             if (typeof p === "string") {
                                 this._labelToId.set(p, p);
@@ -451,40 +534,91 @@ app.registerExtension({
     },
 
     async setup() {
-        // Register setting for API Key
+        // Register setting for API Key. onChange fires on initial registration
+        // with (newValue, oldValue) — ignore if they match so startup doesn't
+        // spuriously trigger a re-init.
+        let _initialApiKey = getApiKey();
         app.ui.settings.addSetting({
             id: "PromptManager.ApiKey",
             name: "Prompt Manager API Key",
             type: "text",
             defaultValue: "",
-            onChange: (value) => {
-                log("[PromptManager] API Key setting changed");
+            onChange: async (value, oldValue) => {
+                if (value === _initialApiKey && oldValue === undefined) return;
+                _initialApiKey = value;
+                log("[PromptManager] API Key changed - re-initializing");
+                await resetPairingState();
+                await connectSSE();
+                reinitAllNodes();
             }
         });
 
-        // Set up Server-Sent Events (SSE) connection to Prompt Manager
-        log("[PromptManager] Setting up SSE connection");
+        // One-time startup nudge when no API key is configured. Fires only
+        // here, not in onChange, so clearing the field to paste a new key
+        // doesn't re-trigger it.
+        if (!getApiKey()) {
+            showToast({
+                severity: "info",
+                summary: "Prompt Manager",
+                detail: "Enter your API key in Settings → PromptManager to get started.",
+            });
+        }
 
+        await connectSSE();
+    }
+});
+
+async function connectSSE() {
+    // Close any existing connection before opening a new one.
+    if (_activeEventSource) {
+        try { _activeEventSource.close(); } catch (_) {}
+        _activeEventSource = null;
+    }
+
+    const log = (...a) => console.log("[PromptManager]", ...a);
+    const warn = (...a) => console.warn("[PromptManager]", ...a);
+
+    try {
+        const response = await api.fetchApi("/prompt-manager/config");
+        const cfg = await response.json();
+        const apiUrl = cfg.api_url;
+        const apiKey = app.ui.settings.getSettingValue("PromptManager.ApiKey", "");
+
+        // Preflight the API key via heartbeat — EventSource can't expose
+        // status codes, so we surface auth failures here before opening SSE.
         try {
-            const cfg = await getConfig();
-            const apiUrl = cfg.api_url;
-            const apiKey = getApiKey();
-
-            // EventSource doesn't support custom headers, so pass token as query param
-            let sseUrl = `${apiUrl}/api/integrations/comfyui/events`;
-            if (apiKey) {
-                sseUrl += `?token=${encodeURIComponent(apiKey)}`;
+            const preflightHeaders = {};
+            if (apiKey) preflightHeaders["Authorization"] = `Bearer ${apiKey}`;
+            const preflight = await fetch(
+                `${apiUrl}/api/integrations/comfyui/heartbeat`,
+                { headers: preflightHeaders }
+            );
+            if (preflight.status === 401) {
+                let code = null;
+                try { code = (await preflight.clone().json())?.code || null; } catch (_) {}
+                showAuthErrorToast(code);
+                return;
             }
+        } catch (e) {
+            warn("SSE preflight errored:", e);
+            // Don't block SSE on network errors — it will reconnect when the
+            // server comes back up.
+        }
 
-            log("[PromptManager] Connecting to SSE endpoint:", sseUrl.replace(/token=[^&]+/, 'token=***'));
+        // EventSource doesn't support custom headers, so pass token as query param
+        let sseUrl = `${apiUrl}/api/integrations/comfyui/events`;
+        if (apiKey) {
+            sseUrl += `?token=${encodeURIComponent(apiKey)}`;
+        }
 
-            const eventSource = new EventSource(sseUrl);
+        const eventSource = new EventSource(sseUrl);
+        _activeEventSource = eventSource;
 
             eventSource.onopen = () => {
                 log("[PromptManager] SSE connection established");
             };
 
-            eventSource.addEventListener("stackUpdate", (event) => {
+            eventSource.addEventListener("stackUpdate", async (event) => {
                 log("[PromptManager] ===== RECEIVED stackUpdate EVENT =====");
                 log("[PromptManager] Raw event data:", event.data);
 
@@ -492,7 +626,8 @@ app.registerExtension({
                     const data = JSON.parse(event.data);
                     log("[PromptManager] Parsed data:", data);
 
-                    const { display_id, prompt } = data;
+                    const { display_id } = data;
+                    const prompt = await decrypt(data.prompt);
 
                     if (!display_id) {
                         warn("[PromptManager] No display_id in event");
@@ -533,13 +668,14 @@ app.registerExtension({
                 }
             });
 
-            eventSource.addEventListener("activeStackChanged", (event) => {
+            eventSource.addEventListener("activeStackChanged", async (event) => {
                 log("[PromptManager] ===== RECEIVED activeStackChanged EVENT =====");
                 log("[PromptManager] Raw event data:", event.data);
 
                 try {
                     const data = JSON.parse(event.data);
-                    const { display_id, prompt } = data;
+                    const { display_id } = data;
+                    const prompt = await decrypt(data.prompt);
 
                     const nodes = app.graph._nodes.filter(n => n.type === "PM_PromptSelector");
 
@@ -576,12 +712,9 @@ app.registerExtension({
                 }
             };
 
-            // Store reference for potential cleanup
-            window.promptManagerSSE = eventSource;
-
-            log("[PromptManager] SSE listener registered");
-        } catch (error) {
-            console.error("[PromptManager] Failed to set up SSE connection:", error);
-        }
+        window.promptManagerSSE = eventSource;
+        log("SSE listener registered");
+    } catch (error) {
+        console.error("[PromptManager] Failed to set up SSE connection:", error);
     }
-});
+}
