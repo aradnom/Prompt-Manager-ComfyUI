@@ -39,7 +39,9 @@ Before you can use these nodes, you need to do the following:
 
 ## ComfyUI Setup
 
+- Make sure Prompt Manager is open in a browser tab and you're logged in — the pairing step below needs an active session to complete.
 - In ComfyUI, go into Settings -> Prompt Manager and paste in the API key from above.
+- A popup should appear on the Prompt Manager side asking you to confirm the pairing with ComfyUI. This is what hands the ComfyUI extension the key it needs to decrypt your prompts on its end. Accept the request, and you should get a confirmation on the ComfyUI side with the node connection status showing as Connected.
 - Two new nodes should be available under Add Node -> PromptManager, Prompt Selector and Snapshot Selector. Start with Prompt Selector if you're using this for the first time.
 - If everything went according to plan, you should see a green Connected status in the upper-right corner of the node.
 - Click List All Prompts to load all of your prompts from Prompt Manager, then click the dropdown below that to select one. This should populate the node with the prompt contents.
